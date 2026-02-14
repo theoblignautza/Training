@@ -1,0 +1,5 @@
+{
+  "name": "Velocity Network Manager",
+  "description": "A web interface for managing network device configurations, templates, and compliance using the Velocity backend API. This application allows users to perform CRUD operations on devices and templates, run compliance checks, and manage configuration backups.",
+  "requestFramePermissions": []
+}

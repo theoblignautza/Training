@@ -1,0 +1,189 @@
+const express = require('express');
+const cors = require('cors');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+const fs = require('fs').promises;
+const Database = require('better-sqlite3');
+
+// Import route modules
+const deviceRoutes = require('./routes/devices');
+const templateRoutes = require('./routes/templates');
+const complianceRoutes = require('./routes/compliance');
+const configRoutes = require('./routes/config');
+const discoveryRoutes = require('./routes/discovery');
+const backupRoutes = require('./routes/backups');
+
+// Import database initialization
+const { initializeDatabase } = require('./database/init');
+
+// Configuration
+const PORT = process.env.PORT || 8080;
+const HOST = process.env.HOST || '0.0.0.0'; // Listen on all interfaces for LAN access
+
+// Initialize Express app
+const app = express();
+const httpServer = createServer(app);
+
+// Initialize Socket.IO for real-time logging
+const io = new Server(httpServer, {
+  cors: {
+    origin: '*', // Allow all origins for development (restrict in production)
+    methods: ['GET', 'POST', 'PUT', 'DELETE']
+  }
+});
+
+// Make io accessible to routes
+app.set('io', io);
+
+// Middleware
+app.use(cors({
+  origin: '*', // Allow all origins for LAN access
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
+
+// Initialize database
+const dbPath = path.join(__dirname, 'data', 'velocity.db');
+const db = initializeDatabase(dbPath);
+
+// Make database accessible to routes
+app.set('db', db);
+
+// API Routes
+app.use('/api/v1/devices', deviceRoutes);
+app.use('/api/v1/templates', templateRoutes);
+app.use('/api/v1/compliance', complianceRoutes);
+app.use('/api/v1/config', configRoutes);
+app.use('/api/v1/discovery', discoveryRoutes);
+app.use('/api/v1/backups', backupRoutes);
+
+// Health check endpoint
+app.get('/api/v1/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// Root endpoint
+app.get('/api/v1', (req, res) => {
+  res.json({
+    name: 'Velocity Network Manager API',
+    version: '1.0.0',
+    endpoints: {
+      devices: '/api/v1/devices',
+      templates: '/api/v1/templates',
+      compliance: '/api/v1/compliance',
+      config: '/api/v1/config',
+      discovery: '/api/v1/discovery',
+      backups: '/api/v1/backups',
+      health: '/api/v1/health'
+    }
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  
+  // Emit error to WebSocket clients
+  io.emit('log', {
+    type: 'error',
+    message: err.message,
+    timestamp: new Date().toISOString()
+  });
+  
+  res.status(err.status || 500).json({
+    error: true,
+    message: err.message || 'Internal server error',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    error: true,
+    message: `Cannot ${req.method} ${req.path}`,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log('Client connected:', socket.id);
+  
+  // Send welcome message
+  socket.emit('log', {
+    type: 'info',
+    message: 'Connected to Velocity Network Manager',
+    timestamp: new Date().toISOString()
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+  });
+  
+  socket.on('subscribe', (room) => {
+    socket.join(room);
+    console.log(`Client ${socket.id} joined room: ${room}`);
+  });
+  
+  socket.on('unsubscribe', (room) => {
+    socket.leave(room);
+    console.log(`Client ${socket.id} left room: ${room}`);
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, closing server gracefully...');
+  httpServer.close(() => {
+    console.log('Server closed');
+    db.close();
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, closing server gracefully...');
+  httpServer.close(() => {
+    console.log('Server closed');
+    db.close();
+    process.exit(0);
+  });
+});
+
+// Start server
+httpServer.listen(PORT, HOST, () => {
+  console.log('═══════════════════════════════════════════════════════');
+  console.log(' Velocity Network Manager Backend');
+  console.log('═══════════════════════════════════════════════════════');
+  console.log(`Server running on: http://${HOST}:${PORT}`);
+  console.log(`API Base URL: http://${HOST}:${PORT}/api/v1`);
+  console.log(`Health Check: http://${HOST}:${PORT}/api/v1/health`);
+  console.log(`WebSocket: ws://${HOST}:${PORT}`);
+  console.log('═══════════════════════════════════════════════════════');
+  console.log('Database:', dbPath);
+  console.log('Ready to accept connections from LAN');
+  console.log('═══════════════════════════════════════════════════════\n');
+  
+  // Emit startup log
+  io.emit('log', {
+    type: 'success',
+    message: 'Backend server started successfully',
+    timestamp: new Date().toISOString()
+  });
+});
+
+module.exports = { app, io, db };
